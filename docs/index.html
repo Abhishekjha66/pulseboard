@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PulseBoard — Real-Time Sales Analytics</title>
+<meta name="description" content="Medallion ETL pipeline, ML revenue forecast and a real-time Socket.IO dashboard.">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0b1020; --panel:#131a30; --panel2:#18213b; --line:#26304f;
+    --text:#e8ecf7; --muted:#8e9ac0; --accent:#5b8cff; --accent2:#22d3a6;
+    --warn:#f5a524; --bad:#ff5d73; --radius:14px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1200px;margin:0 auto;padding:24px 16px 60px}
+  header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin-bottom:22px}
+  h1{margin:0;font-size:24px;letter-spacing:-.3px}
+  h1 span{color:var(--accent)}
+  .sub{color:var(--muted);font-size:13px;margin-top:2px}
+  .pill{display:inline-flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);
+    border-radius:999px;padding:6px 12px;font-size:12.5px;color:var(--muted)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--warn)}
+  .dot.live{background:var(--accent2);box-shadow:0 0 0 0 rgba(34,211,166,.6);animation:pulse 1.8s infinite}
+  @keyframes pulse{70%{box-shadow:0 0 0 8px rgba(34,211,166,0)}100%{box-shadow:0 0 0 0 rgba(34,211,166,0)}}
+  .grid{display:grid;gap:14px}
+  .kpis{grid-template-columns:repeat(4,1fr);margin-bottom:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+  .card h2{margin:0 0 2px;font-size:14px;font-weight:600}
+  .card .hint{color:var(--muted);font-size:12px;margin-bottom:10px}
+  .kpi .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.6px}
+  .kpi .value{font-size:28px;font-weight:700;margin-top:4px;letter-spacing:-.5px}
+  .kpi .note{font-size:12px;color:var(--muted)}
+  .row2{grid-template-columns:2fr 1fr;margin-bottom:14px}
+  .row3{grid-template-columns:repeat(3,1fr);margin-bottom:14px}
+  .row2b{grid-template-columns:1fr 1fr;margin-bottom:14px}
+  .chart{position:relative;height:260px}
+  .chart.tall{height:300px}
+  .section-title{margin:26px 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)}
+  .feed{list-style:none;margin:0;padding:0;max-height:300px;overflow:hidden}
+  .feed li{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);
+    font-size:13px;animation:slide .35s ease}
+  .feed li small{color:var(--muted);display:block}
+  .feed .amt{font-weight:600;color:var(--accent2);white-space:nowrap}
+  @keyframes slide{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+  .dq{display:grid;gap:8px}
+  .dq .bar{display:flex;align-items:center;gap:10px;font-size:12.5px}
+  .dq .bar .name{width:210px;color:var(--muted)}
+  .dq .bar .track{flex:1;background:var(--panel2);border-radius:6px;height:10px;overflow:hidden}
+  .dq .bar .fill{height:100%;background:var(--warn)}
+  .dq .bar .n{width:46px;text-align:right}
+  .metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:6px}
+  .metric{background:var(--panel2);border-radius:10px;padding:10px 12px}
+  .metric b{display:block;font-size:20px}
+  .metric span{color:var(--muted);font-size:12px}
+  footer{margin-top:30px;color:var(--muted);font-size:12.5px;text-align:center}
+  footer a{color:var(--accent);text-decoration:none}
+  @media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.row2,.row3,.row2b{grid-template-columns:1fr}.dq .bar .name{width:140px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1><span>Pulse</span>Board</h1>
+      <div class="sub">Medallion ETL &rarr; ML forecast &rarr; real-time stream &nbsp;·&nbsp; <span id="generated"></span></div>
+    </div>
+    <div class="pill"><span class="dot" id="dot"></span><span id="status">connecting…</span></div>
+  </header>
+
+  <div class="grid kpis">
+    <div class="card kpi"><div class="label">Total revenue</div><div class="value" id="k-rev">–</div><div class="note">Gold layer · clean orders only</div></div>
+    <div class="card kpi"><div class="label">Orders</div><div class="value" id="k-ord">–</div><div class="note" id="k-ord-note"></div></div>
+    <div class="card kpi"><div class="label">Avg order value</div><div class="value" id="k-aov">–</div><div class="note">revenue ÷ orders</div></div>
+    <div class="card kpi"><div class="label">Unique customers</div><div class="value" id="k-cus">–</div><div class="note">distinct customer IDs</div></div>
+  </div>
+
+  <div class="section-title">Live stream</div>
+  <div class="grid row2">
+    <div class="card">
+      <h2>Revenue per second (rolling)</h2>
+      <div class="hint" id="live-hint">Last 60 s of incoming orders</div>
+      <div class="chart"><canvas id="c-live"></canvas></div>
+      <div class="grid" style="grid-template-columns:repeat(3,1fr);margin-top:10px">
+        <div class="metric"><b id="l-ord">0</b><span>orders / last 60 s</span></div>
+        <div class="metric"><b id="l-rev">₹0</b><span>revenue / last 60 s</span></div>
+        <div class="metric"><b id="l-aov">₹0</b><span>avg order value</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Incoming orders</h2>
+      <div class="hint">Pushed to the browser as they happen</div>
+      <ul class="feed" id="feed"></ul>
+    </div>
+  </div>
+
+  <div class="section-title">Batch analytics (Gold layer)</div>
+  <div class="grid row2">
+    <div class="card">
+      <h2>30-day revenue forecast</h2>
+      <div class="hint">Linear regression on daily orders (trend + weekday) × average order value, 95% band</div>
+      <div class="chart tall"><canvas id="c-forecast"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>Model evaluation</h2>
+      <div class="hint">Chronological hold-out: train first 80% of days, test last 20%</div>
+      <div class="metrics" id="metrics"></div>
+      <p class="hint" style="margin-top:12px">Order volume is strongly predictable; daily revenue is noisier because a few big-ticket items dominate it, so revenue error is reported as MAPE.</p>
+    </div>
+  </div>
+
+  <div class="grid row3">
+    <div class="card"><h2>Monthly revenue</h2><div class="hint">Growth trend</div><div class="chart"><canvas id="c-month"></canvas></div></div>
+    <div class="card"><h2>Top products</h2><div class="hint">By revenue</div><div class="chart"><canvas id="c-prod"></canvas></div></div>
+    <div class="card"><h2>Revenue by region</h2><div class="hint">Share of total</div><div class="chart"><canvas id="c-region"></canvas></div></div>
+  </div>
+  <div class="grid row2b">
+    <div class="card"><h2>Orders by hour of day</h2><div class="hint">Peak traffic window</div><div class="chart"><canvas id="c-hour"></canvas></div></div>
+    <div class="card"><h2>Sales channel mix</h2><div class="hint">Orders by channel</div><div class="chart"><canvas id="c-channel"></canvas></div></div>
+  </div>
+
+  <div class="section-title">Data quality (Bronze → Silver)</div>
+  <div class="card">
+    <h2 id="dq-title">Rejected records</h2>
+    <div class="hint">Rows removed by validation rules before reaching the Gold layer</div>
+    <div class="dq" id="dq"></div>
+  </div>
+
+  <footer>
+    Built with Python · SQL · scikit-learn · Node.js · Express · Socket.IO · Chart.js &nbsp;·&nbsp;
+    <a href="https://github.com/Abhishekjha66/pulseboard" target="_blank" rel="noopener">View source on GitHub</a>
+  </footer>
+</div>
+
+<script>
+const inr = n => "₹" + Math.round(n).toLocaleString("en-IN");
+const compact = n => n >= 1e7 ? "₹" + (n/1e7).toFixed(2) + " Cr" : n >= 1e5 ? "₹" + (n/1e5).toFixed(2) + " L" : inr(n);
+const $ = id => document.getElementById(id);
+const PALETTE = ["#5b8cff","#22d3a6","#f5a524","#ff5d73","#a78bfa","#38bdf8"];
+Chart.defaults.color = "#8e9ac0";
+Chart.defaults.borderColor = "#26304f";
+Chart.defaults.font.family = "system-ui,-apple-system,Segoe UI,Roboto,sans-serif";
+Chart.defaults.maintainAspectRatio = false;
+Chart.defaults.plugins.legend.display = false;
+
+/* ---------------------------- batch (Gold layer) ---------------------------- */
+async function loadGold() {
+  const g = await (await fetch("data/gold.json")).json();
+  $("generated").textContent = "pipeline run " + g.generated_at.replace("T"," ").replace("+00:00"," UTC");
+  $("k-rev").textContent = compact(g.kpis.revenue);
+  $("k-ord").textContent = g.kpis.orders.toLocaleString("en-IN");
+  $("k-ord-note").textContent = g.data_quality.bronze_rows.toLocaleString("en-IN") + " raw rows ingested";
+  $("k-aov").textContent = inr(g.kpis.avg_order_value);
+  $("k-cus").textContent = g.kpis.customers.toLocaleString("en-IN");
+
+  // monthly
+  new Chart($("c-month"), { type:"bar",
+    data:{ labels:g.monthly_sales.map(d=>d.month.slice(2)), datasets:[{data:g.monthly_sales.map(d=>d.revenue),backgroundColor:"#5b8cff",borderRadius:4}] },
+    options:{ scales:{ y:{ticks:{callback:v=>compact(v)}} } } });
+
+  // products
+  const top = g.product_summary.slice(0,8);
+  new Chart($("c-prod"), { type:"bar",
+    data:{ labels:top.map(d=>d.product), datasets:[{data:top.map(d=>d.revenue),backgroundColor:"#22d3a6",borderRadius:4}] },
+    options:{ indexAxis:"y", scales:{ x:{ticks:{callback:v=>compact(v)}} } } });
+
+  // region
+  new Chart($("c-region"), { type:"doughnut",
+    data:{ labels:g.region_summary.map(d=>d.region), datasets:[{data:g.region_summary.map(d=>d.revenue),backgroundColor:PALETTE,borderWidth:0}] },
+    options:{ cutout:"62%", plugins:{legend:{display:true,position:"bottom"}} } });
+
+  // hour
+  new Chart($("c-hour"), { type:"bar",
+    data:{ labels:g.hourly_pattern.map(d=>d.hour+":00"), datasets:[{data:g.hourly_pattern.map(d=>d.orders),backgroundColor:"#a78bfa",borderRadius:3}] } });
+
+  // channel
+  new Chart($("c-channel"), { type:"doughnut",
+    data:{ labels:g.channel_summary.map(d=>d.channel), datasets:[{data:g.channel_summary.map(d=>d.orders),backgroundColor:PALETTE.slice(2),borderWidth:0}] },
+    options:{ cutout:"62%", plugins:{legend:{display:true,position:"bottom"}} } });
+
+  // forecast: last 60 days actual + 30 days forecast with band
+  const hist = g.daily_sales.slice(-60);
+  const fc = g.forecast.forecast;
+  const labels = [...hist.map(d=>d.date), ...fc.map(d=>d.date)];
+  const pad = n => Array(n).fill(null);
+  const lastActual = hist[hist.length-1].revenue;
+  new Chart($("c-forecast"), { type:"line",
+    data:{ labels, datasets:[
+      { label:"Actual", data:[...hist.map(d=>d.revenue), ...pad(fc.length)], borderColor:"#5b8cff", borderWidth:2, pointRadius:0, tension:.25 },
+      { label:"Upper", data:[...pad(hist.length-1), lastActual, ...fc.map(d=>d.upper)], borderWidth:0, pointRadius:0, backgroundColor:"rgba(34,211,166,.15)", fill:"+1" },
+      { label:"Lower", data:[...pad(hist.length-1), lastActual, ...fc.map(d=>d.lower)], borderWidth:0, pointRadius:0, fill:false },
+      { label:"Forecast", data:[...pad(hist.length-1), lastActual, ...fc.map(d=>d.revenue)], borderColor:"#22d3a6", borderDash:[6,4], borderWidth:2, pointRadius:0, tension:.25 },
+    ]},
+    options:{ interaction:{mode:"index",intersect:false},
+      plugins:{ legend:{display:true,labels:{filter:i=>["Actual","Forecast"].includes(i.text)}},
+                tooltip:{filter:i=>["Actual","Forecast"].includes(i.dataset.label), callbacks:{label:c=>c.dataset.label+": "+inr(c.parsed.y)}} },
+      scales:{ x:{ticks:{maxTicksLimit:8,callback:function(v){return this.getLabelForValue(v).slice(5)}}}, y:{ticks:{callback:v=>compact(v)}} } } });
+
+  // metrics
+  const m = g.forecast.metrics;
+  const tiles = [
+    [m.orders_r2, "Orders R² (hold-out)"],
+    [m.revenue_mape_pct + "%", "Revenue MAPE"],
+    [inr(m.revenue_mae), "Revenue MAE / day"],
+    [m.train_days + " / " + m.test_days, "Train / test days"],
+    ["+" + g.forecast.orders_trend_per_day, "Order growth / day"],
+    [inr(g.forecast.avg_order_value), "Avg order value used"],
+  ];
+  $("metrics").innerHTML = tiles.map(t=>`<div class="metric"><b>${t[0]}</b><span>${t[1]}</span></div>`).join("");
+
+  // data quality
+  const dq = g.data_quality, rej = dq.rejected, max = Math.max(...Object.values(rej));
+  $("dq-title").textContent = `${dq.bronze_rows.toLocaleString("en-IN")} raw → ${dq.silver_rows.toLocaleString("en-IN")} clean rows (${dq.rejection_rate_pct}% rejected)`;
+  $("dq").innerHTML = Object.entries(rej).map(([k,v]) =>
+    `<div class="bar"><div class="name">${k.replace(/_/g," ")}</div><div class="track"><div class="fill" style="width:${v/max*100}%"></div></div><div class="n">${v}</div></div>`).join("");
+}
+
+/* ------------------------------- live stream ------------------------------- */
+const PRODUCTS = [["Laptop","Electronics",55000],["Smartphone","Electronics",24000],["Headphones","Electronics",3500],["Smartwatch","Electronics",8000],["Running Shoes","Fashion",4200],["Backpack","Fashion",1800],["Jacket","Fashion",3200],["Coffee Maker","Home",5200],["Desk Lamp","Home",1400],["Office Chair","Home",9500],["Yoga Mat","Sports",1100],["Dumbbell Set","Sports",3800]];
+const REGIONS = ["North","South","East","West"];
+const pick = a => a[Math.floor(Math.random()*a.length)];
+let seq = 0;
+function simOrder() {
+  const [product,category,base] = pick(PRODUCTS);
+  const quantity = pick([1,1,1,1,1,1,1,2,2,3]);
+  const unit_price = Math.round(base*(0.9+Math.random()*0.2));
+  return { order_id:"LIVE-"+String(++seq).padStart(6,"0"), ts:Date.now(), product, category, region:pick(REGIONS), quantity, unit_price, revenue:quantity*unit_price };
+}
+
+const WINDOW = 60;
+const liveOrders = [];
+const liveChart = new Chart($("c-live"), { type:"line",
+  data:{ labels:Array.from({length:WINDOW},(_,i)=>i-WINDOW+1), datasets:[{ data:Array(WINDOW).fill(0), borderColor:"#22d3a6", backgroundColor:"rgba(34,211,166,.15)", fill:true, borderWidth:2, pointRadius:0, tension:.3 }]},
+  options:{ animation:false, scales:{ x:{ticks:{maxTicksLimit:6,callback:function(v){return this.getLabelForValue(v)+"s"}}}, y:{beginAtZero:true,ticks:{callback:v=>compact(v)}} } } });
+
+function addOrder(o) {
+  liveOrders.push(o);
+  const li = document.createElement("li");
+  li.innerHTML = `<div>${o.product} ×${o.quantity}<small>${o.region} · ${o.order_id}</small></div><div class="amt">${inr(o.revenue)}</div>`;
+  const feed = $("feed"); feed.prepend(li);
+  while (feed.children.length > 9) feed.lastChild.remove();
+}
+function redrawLive() {
+  const now = Date.now(), buckets = Array(WINDOW).fill(0);
+  while (liveOrders.length && now - liveOrders[0].ts > WINDOW*1000) liveOrders.shift();
+  let rev = 0;
+  for (const o of liveOrders) { buckets[WINDOW-1-Math.floor((now-o.ts)/1000)] += o.revenue; rev += o.revenue; }
+  liveChart.data.datasets[0].data = buckets; liveChart.update("none");
+  $("l-ord").textContent = liveOrders.length; $("l-rev").textContent = compact(rev);
+  $("l-aov").textContent = liveOrders.length ? inr(rev/liveOrders.length) : "₹0";
+}
+setInterval(redrawLive, 1000);
+
+function setStatus(live, text) { $("dot").className = "dot" + (live ? " live" : ""); $("status").textContent = text; }
+
+function startSimulator() {
+  setStatus(true, "live · in-browser simulator");
+  $("live-hint").textContent = "Simulated order stream (run the Node server for real Socket.IO)";
+  (function loop(){ addOrder(simOrder()); setTimeout(loop, 400 + Math.random()*1600); })();
+}
+function loadScript(src) { return new Promise((res,rej)=>{ const s=document.createElement("script"); s.src=src; s.onload=res; s.onerror=rej; document.head.appendChild(s); }); }
+
+async function startLive() {
+  const param = new URLSearchParams(location.search).get("server");
+  const base = (param || "").replace(/\/$/, "");
+  try {
+    const r = await fetch(base + "/api/health", { cache:"no-store" });
+    if (!r.ok) throw new Error("no server");
+    await loadScript(base + "/socket.io/socket.io.js");
+    const socket = io(base || undefined);
+    socket.on("connect", () => setStatus(true, "live · Socket.IO connected"));
+    socket.on("disconnect", () => setStatus(false, "disconnected — retrying…"));
+    socket.on("order:history", list => list.forEach(addOrder));
+    socket.on("order:new", addOrder);
+    $("live-hint").textContent = "Real-time events over WebSocket from the Node.js server";
+  } catch (e) { startSimulator(); }
+}
+
+loadGold().catch(e => { console.error(e); $("generated").textContent = "failed to load data/gold.json"; });
+startLive();
+</script>
+</body>
+</html>
